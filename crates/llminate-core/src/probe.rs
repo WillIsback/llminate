@@ -128,13 +128,28 @@ pub fn classify_engine(version_body: Option<&str>, model_info_body: Option<&str>
     }
 }
 
+/// Engine kind for the report: true "unknown" is only for endpoints that did
+/// not answer in an OpenAI-compatible way. Also note: a 200 with an unparseable
+/// body yields ok=false but stays "openai-compatible" (not "unknown").
+pub fn engine_kind(models_ok: bool, classified_kind: &str) -> String {
+    if !models_ok && classified_kind == "openai-compatible" {
+        "unknown".to_string()
+    } else {
+        classified_kind.to_string()
+    }
+}
+
+/// Overall verdict: auth OK and at least one model.
+pub fn probe_ok(auth_status: &str, models_len: usize) -> bool {
+    matches!(auth_status, "ok" | "not_required") && models_len > 0
+}
+
 /// Probe one endpoint and build its report. Never panics; optional probes are
 /// best-effort and recorded in `endpoints` / `errors`.
 pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport {
     let has_key = client.has_api_key();
     let url = client.base_url().to_string();
     let mut endpoints = BTreeMap::new();
-    let mut errors = Vec::new();
 
     // /v1/models — primary signal
     let t0 = Instant::now();
@@ -176,19 +191,114 @@ pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport {
             },
         ),
     };
-    endpoints.insert("/v1/models".to_string(), models_ep.clone());
+    let models_ok = models_ep.status == "ok";
+    let primary_unreachable = models_ep.status == "unreachable";
+    endpoints.insert("/v1/models".to_string(), models_ep);
 
-    // engine (best-effort); mark unknown when the endpoint is not OpenAI-compatible
-    let version_body = fetch(client, "/version", &mut endpoints).await;
-    let model_info_body = fetch(client, "/get_model_info", &mut endpoints).await;
-    let mut engine = classify_engine(version_body.as_deref(), model_info_body.as_deref());
-    if models_ep.status != "ok" && engine.kind == "openai-compatible" {
-        engine.kind = "unknown".to_string();
+    // Optional probes: skip entirely when the host is unreachable (black-holed)
+    // so we do not pay a full client timeout four more times; otherwise run them
+    // concurrently so worst-case latency stays ~one timeout.
+    let (engine, health) = if primary_unreachable {
+        for path in ["/version", "/get_model_info", "/health", "/metrics"] {
+            endpoints.insert(
+                path.to_string(),
+                EndpointInfo {
+                    status: "unreachable".into(),
+                    http_status: None,
+                },
+            );
+        }
+        (
+            EngineInfo {
+                kind: "unknown".into(),
+                version: None,
+            },
+            HealthInfo {
+                status: "unreachable".into(),
+                latency_ms: None,
+            },
+        )
+    } else {
+        let (version, model_info, health, metrics) = tokio::join!(
+            fetch(client, "/version"),
+            fetch(client, "/get_model_info"),
+            health_probe(client),
+            fetch_metrics(client),
+        );
+        endpoints.insert("/version".to_string(), version.0);
+        endpoints.insert("/get_model_info".to_string(), model_info.0);
+        endpoints.insert("/health".to_string(), health.1);
+        endpoints.insert("/metrics".to_string(), metrics);
+        let classified = classify_engine(version.1.as_deref(), model_info.1.as_deref());
+        (
+            EngineInfo {
+                kind: engine_kind(models_ok, &classified.kind),
+                version: classified.version,
+            },
+            health.0,
+        )
+    };
+
+    let ok = probe_ok(&auth.status, models.len());
+
+    let mut errors = Vec::new();
+    for (path, ep) in &endpoints {
+        if ep.status != "ok" {
+            let detail = ep
+                .http_status
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unreachable".to_string());
+            errors.push(ProbeError {
+                probe: path.clone(),
+                message: detail,
+            });
+        }
     }
 
-    // health (best-effort, timed)
+    ProbeReport {
+        probe_version: 1,
+        ok,
+        target,
+        url,
+        auth,
+        engine,
+        models,
+        latency_ms,
+        health,
+        endpoints,
+        errors,
+    }
+}
+
+async fn fetch(client: &Client, path: &str) -> (EndpointInfo, Option<String>) {
+    match client.get(path).await {
+        Ok(b) => (
+            EndpointInfo {
+                status: "ok".into(),
+                http_status: Some(200),
+            },
+            Some(b),
+        ),
+        Err(Error::Http { status, .. }) => (
+            EndpointInfo {
+                status: endpoint_status(status).into(),
+                http_status: Some(status),
+            },
+            None,
+        ),
+        Err(_) => (
+            EndpointInfo {
+                status: "unreachable".into(),
+                http_status: None,
+            },
+            None,
+        ),
+    }
+}
+
+async fn health_probe(client: &Client) -> (HealthInfo, EndpointInfo) {
     let h0 = Instant::now();
-    let (health, health_ep) = match client.get("/health").await {
+    match client.get("/health").await {
         Ok(_) => (
             HealthInfo {
                 status: "ok".into(),
@@ -219,78 +329,6 @@ pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport {
                 http_status: None,
             },
         ),
-    };
-    endpoints.insert("/health".to_string(), health_ep);
-
-    // metrics (best-effort, retry unauthenticated on 401/403)
-    endpoints.insert("/metrics".to_string(), fetch_metrics(client).await);
-
-    let ok = matches!(auth.status.as_str(), "ok" | "not_required") && !models.is_empty();
-
-    for (path, ep) in &endpoints {
-        if ep.status != "ok" {
-            let detail = ep
-                .http_status
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "unreachable".to_string());
-            errors.push(ProbeError {
-                probe: path.clone(),
-                message: detail,
-            });
-        }
-    }
-
-    ProbeReport {
-        probe_version: 1,
-        ok,
-        target,
-        url,
-        auth,
-        engine,
-        models,
-        latency_ms,
-        health,
-        endpoints,
-        errors,
-    }
-}
-
-async fn fetch(
-    client: &Client,
-    path: &str,
-    endpoints: &mut BTreeMap<String, EndpointInfo>,
-) -> Option<String> {
-    match client.get(path).await {
-        Ok(b) => {
-            endpoints.insert(
-                path.to_string(),
-                EndpointInfo {
-                    status: "ok".into(),
-                    http_status: Some(200),
-                },
-            );
-            Some(b)
-        }
-        Err(Error::Http { status, .. }) => {
-            endpoints.insert(
-                path.to_string(),
-                EndpointInfo {
-                    status: endpoint_status(status).into(),
-                    http_status: Some(status),
-                },
-            );
-            None
-        }
-        Err(_) => {
-            endpoints.insert(
-                path.to_string(),
-                EndpointInfo {
-                    status: "unreachable".into(),
-                    http_status: None,
-                },
-            );
-            None
-        }
     }
 }
 
@@ -381,5 +419,21 @@ mod tests {
         assert_eq!(both.kind, "vllm");
 
         assert_eq!(classify_engine(None, None).kind, "openai-compatible");
+    }
+
+    #[test]
+    fn engine_kind_unknown_only_when_incompatible() {
+        assert_eq!(engine_kind(true, "openai-compatible"), "openai-compatible");
+        assert_eq!(engine_kind(false, "openai-compatible"), "unknown");
+        assert_eq!(engine_kind(false, "vllm"), "vllm");
+        assert_eq!(engine_kind(true, "sglang"), "sglang");
+    }
+
+    #[test]
+    fn probe_ok_rule() {
+        assert!(probe_ok("ok", 1));
+        assert!(probe_ok("not_required", 2));
+        assert!(!probe_ok("rejected", 1));
+        assert!(!probe_ok("ok", 0));
     }
 }
