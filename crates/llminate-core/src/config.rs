@@ -735,4 +735,17 @@ timeout_secs = 5
         assert!(add_target(&path, "a.b", "http://y:1").is_err()); // dotted = invalid
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn add_target_escapes_quotes_and_backslash() {
+        let dir = std::env::temp_dir().join(format!("llminate-esc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let tricky = "http://x/\"a\\b\"";
+        add_target(&path, "esc", tricky).unwrap();
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.targets["esc"].url, tricky);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
