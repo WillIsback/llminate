@@ -420,6 +420,9 @@ pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
             "nom de cible invalide '{name}' (autorisé: lettres, chiffres, _ et -)"
         )));
     }
+    if url.contains('\n') || url.contains('\r') {
+        return Err(Error::Config("url invalide (retour à la ligne)".into()));
+    }
     let cfg = load_from(path)?;
     if cfg.targets.contains_key(name) {
         return Err(Error::Config(format!("cible '{name}' existe déjà")));
@@ -746,6 +749,16 @@ timeout_secs = 5
         add_target(&path, "esc", tricky).unwrap();
         let cfg = load_from(&path).unwrap();
         assert_eq!(cfg.targets["esc"].url, tricky);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_target_rejects_newline_url() {
+        let dir = std::env::temp_dir().join(format!("llminate-nl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        assert!(add_target(&path, "x", "http://a\nb").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

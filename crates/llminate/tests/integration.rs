@@ -112,6 +112,39 @@ fn cfg_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("llminate-it-{}", std::process::id()))
 }
 
+async fn not_compatible_models() -> axum::response::Response {
+    (axum::http::StatusCode::NOT_FOUND, "nope").into_response()
+}
+
+fn not_compatible_app() -> Router {
+    // Answers, but exposes no OpenAI-compatible /v1/models and no engine marker
+    // (/version, /get_model_info), so the probe must classify it as unknown.
+    Router::new()
+        .route("/v1/models", get(not_compatible_models))
+        .route("/health", get(health))
+        .route("/metrics", get(metrics))
+}
+
+fn base_not_compatible() -> &'static str {
+    static BASE: OnceLock<String> = OnceLock::new();
+    BASE.get_or_init(|| start(not_compatible_app()))
+}
+
+async fn metrics_flip(headers: axum::http::HeaderMap) -> axum::response::Response {
+    if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        (axum::http::StatusCode::UNAUTHORIZED, "no").into_response()
+    } else {
+        ([(axum::http::header::CONTENT_TYPE, "text/plain")], METRICS).into_response()
+    }
+}
+
+fn dead_url() -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    format!("http://127.0.0.1:{port}")
+}
+
 fn run(args: &[&str], with_key: bool) -> std::process::Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_llminate"));
     c.env("LLMINATE_CONFIG", cfg_path())
@@ -154,7 +187,7 @@ fn auth_app() -> Router {
         .route("/health", get(health))
         .route("/version", get(version))
         .route("/get_model_info", get(model_info))
-        .route("/metrics", get(metrics))
+        .route("/metrics", get(metrics_flip))
 }
 
 fn base_auth() -> &'static str {
@@ -391,7 +424,7 @@ fn probe_json_contract() {
 #[test]
 fn probe_auth_rejected() {
     let o = run_at(&["probe", "--json"], base_auth(), Some("sk-wrong"));
-    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
     let v: Value = serde_json::from_str(&out(&o)).unwrap();
     assert_eq!(v["auth"]["status"], "rejected");
     assert_eq!(v["ok"], false);
@@ -400,7 +433,7 @@ fn probe_auth_rejected() {
 #[test]
 fn probe_auth_required_missing() {
     let o = run_at(&["probe", "--json"], base_auth(), None);
-    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
     let v: Value = serde_json::from_str(&out(&o)).unwrap();
     assert_eq!(v["auth"]["status"], "required_missing");
 }
@@ -428,5 +461,57 @@ fn probe_save_as_writes_target() {
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("[targets.lab]"), "{text}");
     assert!(text.contains(base()), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn probe_auth_ok_sends_bearer() {
+    let o = run_at(&["probe", "--json"], base_auth(), Some("sk-test"));
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let v: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["auth"]["status"], "ok");
+    assert_eq!(v["models"][0]["id"], "auth-model");
+    // /v1/models 200 with the key proves the bearer was transmitted;
+    // /metrics ok proves the 401 -> unauthenticated retry worked.
+    assert_eq!(v["endpoints"]["/metrics"]["status"], "ok");
+}
+
+#[test]
+fn probe_not_openai_compatible() {
+    let o = run_at(&["probe", "--json"], base_not_compatible(), Some("sk-test"));
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    let v: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["endpoints"]["/v1/models"]["status"], "missing");
+    assert_eq!(v["engine"]["kind"], "unknown");
+    assert_eq!(v["ok"], false);
+}
+
+#[test]
+fn probe_unreachable_endpoint() {
+    let url = dead_url();
+    let o = run_at(&["probe", "--json"], &url, Some("sk-test"));
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    let v: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["auth"]["status"], "unreachable");
+    assert_eq!(v["engine"]["kind"], "unknown");
+}
+
+#[test]
+fn probe_save_as_failure_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!("llminate-probenowrite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    let mut c = Command::new(env!("CARGO_BIN_EXE_llminate"));
+    c.env("LLMINATE_CONFIG", &path)
+        .env("LLMINATE_BASE_URL", base_not_compatible())
+        .env("LLMINATE_API_KEY", "sk-test")
+        .args(["probe", "--save-as", "lab"]);
+    let o = c.output().unwrap();
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+    assert!(
+        !path.exists(),
+        "config must not be written on a failed probe"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
