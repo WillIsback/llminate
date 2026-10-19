@@ -36,8 +36,18 @@ pub async fn run(cli: &Cli, style: Style) -> Result<i32> {
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let has_selector = cli.target.is_some() || cli.url.is_some();
 
-    if a.interactive || (!a.json && tty && !has_selector) {
-        return wizard(a.save_as, a.set_default, style).await;
+    if !a.json {
+        if a.interactive {
+            if !tty {
+                return Err(Error::Config(
+                    "--interactive requiert un terminal (TTY)".into(),
+                ));
+            }
+            return wizard(a.save_as, a.set_default, style).await;
+        }
+        if tty && !has_selector {
+            return wizard(a.save_as, a.set_default, style).await;
+        }
     }
 
     let cfg = config::load()?;
