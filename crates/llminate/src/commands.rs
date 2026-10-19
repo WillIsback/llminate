@@ -1,5 +1,7 @@
 //! Subcommand implementations.
 
+pub mod probe;
+
 use crate::output::{mask_key, pretty_json, Style};
 use llminate_core::config::{self, Config};
 use llminate_core::{sse, BenchRow, BenchStats, Client, Error, ResolvedTarget, Result};

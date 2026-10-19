@@ -85,10 +85,35 @@ Highest wins:
 | `health` | `GET /health` | status + latency (`--time`) |
 | `info` | `/version`, `/get_model_info` | engine detection (vLLM / SGLang) |
 | `metrics` | `GET /metrics` | Prometheus summary (`--filter`, `--raw`) |
+| `probe` | `/v1/models`, `/health`, `/version`, `/metrics` | endpoint onboarding: JSON report or interactive wizard (`--json`, `--save-as`) |
 | `smoke` | health + 1 chat | fast pass/fail probe |
 | `bench` | N chats | p50/p95, tok/s (`--n`, `--concurrency`) |
 | `targets` / `use` / `config` | — | target management |
 | `completions <shell>` | — | shell completion script |
+
+## Endpoint onboarding (`probe`)
+
+Validate a new OpenAI-compatible endpoint and inventory it. For backends (any
+language), `--json` emits one stable document:
+
+```
+LLMINATE_API_KEY=… llminate probe --json --url http://host:30000
+```
+
+```json
+{ "probe_version": 1, "ok": true,
+  "auth": {"status": "ok", "http_status": 200},
+  "engine": {"kind": "vllm", "version": "0.32"},
+  "models": [{"id": "…", "owned_by": "vllm"}],
+  "endpoints": {"/v1/models": {"status": "ok", "http_status": 200}} }
+```
+
+- Exit `0` iff `/v1/models` responds 2xx; `1` otherwise; `2` usage/config.
+- `ok` = auth OK **and** at least one model.
+- `auth.status`: `ok` · `not_required` · `rejected` · `required_missing` · `unreachable` · `error`.
+- `engine.kind`: `vllm` · `sglang` · `openai-compatible` · `unknown`.
+- With no arguments on a TTY, an interactive wizard guides you; `--save-as NAME`
+  persists the endpoint as a target (key not stored — set `api_key_env`/`api_key_bws`).
 
 ## Exit codes
 

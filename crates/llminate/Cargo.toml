@@ -23,6 +23,7 @@ clap.workspace = true
 clap_complete.workspace = true
 futures-util.workspace = true
 tokio.workspace = true
+dialoguer.workspace = true
 
 [dev-dependencies]
 axum.workspace = true

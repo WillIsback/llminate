@@ -68,6 +68,9 @@ Same surface as `dgx`, plus target management and a parallel bench:
 - `health [--raw] [--time]`
 - `info [--raw]`
 - `metrics [--raw] [--filter SUBSTR]`
+- `probe [--json|--interactive] [--save-as NAME]` — endpoint onboarding: auth,
+  engine, models, endpoint availability, health/latency. `ProbeReport` lives in
+  `llminate-core::probe` for embedding; the CLI adds rendering + the `dialoguer` wizard.
 - `smoke [--prompt TXT] [--model M]`
 - `bench [--n N] [--concurrency C] [--prompt TXT] [--max-tokens N] [-m M]`
 - `targets`, `use <name>`, `config`, `completions <shell>`

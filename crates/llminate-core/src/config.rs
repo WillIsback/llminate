@@ -408,6 +408,47 @@ pub fn set_default_target(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a target name (ASCII letters, digits, `_`, `-`).
+pub fn validate_target_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(Error::Config(format!(
+            "nom de cible invalide '{name}' (autorisé: lettres, chiffres, _ et -)"
+        )));
+    }
+    Ok(())
+}
+
+/// Append a `[targets.<name>]` block (url only) to the config file.
+/// Errors if the name is invalid or the target already exists. Never stores a secret.
+pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
+    validate_target_name(name)?;
+    if url.contains('\n') || url.contains('\r') {
+        return Err(Error::Config("url invalide (retour à la ligne)".into()));
+    }
+    let cfg = load_from(path)?;
+    if cfg.targets.contains_key(name) {
+        return Err(Error::Config(format!("cible '{name}' existe déjà")));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut text = std::fs::read_to_string(path).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    let escaped = url.replace('\\', "\\\\").replace('"', "\\\"");
+    text.push_str(&format!("[targets.{name}]\nurl = \"{escaped}\"\n"));
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
 fn known(cfg: &Config) -> String {
     if cfg.targets.is_empty() {
         "(aucune)".to_string()
@@ -680,5 +721,50 @@ timeout_secs = 5
         assert_eq!(key_source_label(&cfg.targets["a"]), "bws:VLLM_API_KEY");
         let cfg2 = parse("[targets.a]\nurl=\"http://x:1\"\n").unwrap();
         assert_eq!(key_source_label(&cfg2.targets["a"]), "—");
+    }
+
+    #[test]
+    fn add_target_appends_and_validates() {
+        let dir = std::env::temp_dir().join(format!("llminate-addtarget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        add_target(&path, "spark", "http://192.168.1.87:30000").unwrap();
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.targets["spark"].url, "http://192.168.1.87:30000");
+
+        add_target(&path, "lab", "http://x:1").unwrap();
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.targets.len(), 2);
+        assert_eq!(cfg.targets["lab"].url, "http://x:1");
+
+        assert!(add_target(&path, "spark", "http://y:1").is_err()); // duplicate
+        assert!(add_target(&path, "bad name", "http://y:1").is_err()); // invalid name
+        assert!(add_target(&path, "a.b", "http://y:1").is_err()); // dotted = invalid
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_target_escapes_quotes_and_backslash() {
+        let dir = std::env::temp_dir().join(format!("llminate-esc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let tricky = "http://x/\"a\\b\"";
+        add_target(&path, "esc", tricky).unwrap();
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.targets["esc"].url, tricky);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_target_rejects_newline_url() {
+        let dir = std::env::temp_dir().join(format!("llminate-nl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        assert!(add_target(&path, "x", "http://a\nb").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

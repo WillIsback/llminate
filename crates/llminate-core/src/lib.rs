@@ -7,10 +7,12 @@
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod probe;
 pub mod sse;
 pub mod stats;
 
 pub use client::Client;
 pub use config::{config_path, load, parse, resolve, ApiKeySource, ResolvedTarget, Target};
 pub use error::{Error, Result};
+pub use probe::ProbeReport;
 pub use stats::{BenchRow, BenchStats};

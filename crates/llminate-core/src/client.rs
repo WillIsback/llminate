@@ -33,6 +33,14 @@ impl Client {
         &self.base
     }
 
+    /// Whether a non-empty API key is configured.
+    pub fn has_api_key(&self) -> bool {
+        self.api_key
+            .as_deref()
+            .map(|k| !k.is_empty())
+            .unwrap_or(false)
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base, path)
     }
