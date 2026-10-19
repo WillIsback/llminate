@@ -409,8 +409,17 @@ pub fn set_default_target(path: &Path, name: &str) -> Result<()> {
 }
 
 /// Append a `[targets.<name>]` block (url only) to the config file.
-/// Errors if the target already exists. Does not store any secret.
+/// Errors if the name is invalid or the target already exists. Never stores a secret.
 pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(Error::Config(format!(
+            "nom de cible invalide '{name}' (autorisé: lettres, chiffres, _ et -)"
+        )));
+    }
     let cfg = load_from(path)?;
     if cfg.targets.contains_key(name) {
         return Err(Error::Config(format!("cible '{name}' existe déjà")));
@@ -425,7 +434,8 @@ pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
     if !text.is_empty() {
         text.push('\n');
     }
-    text.push_str(&format!("[targets.{name}]\nurl = \"{url}\"\n"));
+    let escaped = url.replace('\\', "\\\\").replace('"', "\\\"");
+    text.push_str(&format!("[targets.{name}]\nurl = \"{escaped}\"\n"));
     std::fs::write(path, text)?;
     Ok(())
 }
@@ -702,5 +712,27 @@ timeout_secs = 5
         assert_eq!(key_source_label(&cfg.targets["a"]), "bws:VLLM_API_KEY");
         let cfg2 = parse("[targets.a]\nurl=\"http://x:1\"\n").unwrap();
         assert_eq!(key_source_label(&cfg2.targets["a"]), "—");
+    }
+
+    #[test]
+    fn add_target_appends_and_validates() {
+        let dir = std::env::temp_dir().join(format!("llminate-addtarget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        add_target(&path, "spark", "http://192.168.1.87:30000").unwrap();
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.targets["spark"].url, "http://192.168.1.87:30000");
+
+        add_target(&path, "lab", "http://x:1").unwrap();
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.targets.len(), 2);
+        assert_eq!(cfg.targets["lab"].url, "http://x:1");
+
+        assert!(add_target(&path, "spark", "http://y:1").is_err()); // duplicate
+        assert!(add_target(&path, "bad name", "http://y:1").is_err()); // invalid name
+        assert!(add_target(&path, "a.b", "http://y:1").is_err()); // dotted = invalid
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

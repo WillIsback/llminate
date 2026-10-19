@@ -31,25 +31,43 @@ fn args(cli: &Cli) -> ProbeArgs {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Wizard,
+    OneShot,
+}
+
+fn mode(json: bool, interactive: bool, tty: bool, has_selector: bool) -> Result<Mode> {
+    if json {
+        return Ok(Mode::OneShot);
+    }
+    if interactive {
+        if !tty {
+            return Err(Error::Config(
+                "--interactive requiert un terminal (TTY)".into(),
+            ));
+        }
+        return Ok(Mode::Wizard);
+    }
+    if tty && !has_selector {
+        Ok(Mode::Wizard)
+    } else {
+        Ok(Mode::OneShot)
+    }
+}
+
 pub async fn run(cli: &Cli, style: Style) -> Result<i32> {
     let a = args(cli);
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let has_selector = cli.target.is_some() || cli.url.is_some();
 
-    if !a.json {
-        if a.interactive {
-            if !tty {
-                return Err(Error::Config(
-                    "--interactive requiert un terminal (TTY)".into(),
-                ));
-            }
-            return wizard(a.save_as, a.set_default, style).await;
-        }
-        if tty && !has_selector {
-            return wizard(a.save_as, a.set_default, style).await;
-        }
+    match mode(a.json, a.interactive, tty, has_selector)? {
+        Mode::Wizard => wizard(a.save_as, a.set_default, style).await,
+        Mode::OneShot => one_shot(cli, &a, style).await,
     }
+}
 
+async fn one_shot(cli: &Cli, a: &ProbeArgs, style: Style) -> Result<i32> {
     let cfg = config::load()?;
     let ov = Overrides {
         target: cli.target.clone(),
@@ -205,5 +223,16 @@ mod tests {
         assert_eq!(exit_code_from(Some("denied")), 1);
         assert_eq!(exit_code_from(Some("unreachable")), 1);
         assert_eq!(exit_code_from(None), 1);
+    }
+
+    #[test]
+    fn mode_matrix() {
+        assert_eq!(mode(true, false, true, false).unwrap(), Mode::OneShot); // json never prompts
+        assert_eq!(mode(true, true, true, false).unwrap(), Mode::OneShot); // json wins over interactive
+        assert!(mode(false, true, false, false).is_err()); // interactive needs a TTY
+        assert_eq!(mode(false, true, true, true).unwrap(), Mode::Wizard); // forced
+        assert_eq!(mode(false, false, true, false).unwrap(), Mode::Wizard); // auto
+        assert_eq!(mode(false, false, true, true).unwrap(), Mode::OneShot); // selector → one-shot
+        assert_eq!(mode(false, false, false, false).unwrap(), Mode::OneShot); // no TTY
     }
 }
