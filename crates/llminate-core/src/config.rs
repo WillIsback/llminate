@@ -408,6 +408,28 @@ pub fn set_default_target(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Append a `[targets.<name>]` block (url only) to the config file.
+/// Errors if the target already exists. Does not store any secret.
+pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
+    let cfg = load_from(path)?;
+    if cfg.targets.contains_key(name) {
+        return Err(Error::Config(format!("cible '{name}' existe déjà")));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut text = std::fs::read_to_string(path).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(&format!("[targets.{name}]\nurl = \"{url}\"\n"));
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
 fn known(cfg: &Config) -> String {
     if cfg.targets.is_empty() {
         "(aucune)".to_string()
