@@ -20,22 +20,40 @@ pub struct ProbeReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AuthInfo { pub status: String, pub http_status: Option<u16> }
+pub struct AuthInfo {
+    pub status: String,
+    pub http_status: Option<u16>,
+}
 
 #[derive(Debug, Clone, Serialize)]
-pub struct EngineInfo { pub kind: String, pub version: Option<String> }
+pub struct EngineInfo {
+    pub kind: String,
+    pub version: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ModelInfo { pub id: String, pub owned_by: Option<String> }
+pub struct ModelInfo {
+    pub id: String,
+    pub owned_by: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
-pub struct HealthInfo { pub status: String, pub latency_ms: Option<u64> }
+pub struct HealthInfo {
+    pub status: String,
+    pub latency_ms: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize)]
-pub struct EndpointInfo { pub status: String, pub http_status: Option<u16> }
+pub struct EndpointInfo {
+    pub status: String,
+    pub http_status: Option<u16>,
+}
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ProbeError { pub probe: String, pub message: String }
+pub struct ProbeError {
+    pub probe: String,
+    pub message: String,
+}
 
 pub fn endpoint_status(code: u16) -> &'static str {
     match code {
@@ -46,19 +64,27 @@ pub fn endpoint_status(code: u16) -> &'static str {
     }
 }
 
-pub fn auth_status(has_key: bool, ok_2xx: bool, http_status: Option<u16>) -> &'static str {
-    match (ok_2xx, http_status, has_key) {
-        (true, _, true) => "ok",
-        (true, _, false) => "not_required",
-        (false, Some(401 | 403), true) => "rejected",
-        (false, Some(401 | 403), false) => "required_missing",
-        (false, None, _) => "unreachable",
+pub fn auth_status(has_key: bool, http_status: Option<u16>) -> &'static str {
+    match (http_status, has_key) {
+        (Some(c), _) if (200..=299).contains(&c) => {
+            if has_key {
+                "ok"
+            } else {
+                "not_required"
+            }
+        }
+        (Some(401 | 403), true) => "rejected",
+        (Some(401 | 403), false) => "required_missing",
+        (None, _) => "unreachable",
         _ => "error",
     }
 }
 
 pub fn parse_models(body: &str) -> Vec<ModelInfo> {
-    let v: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return Vec::new() };
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
     v["data"]
         .as_array()
         .into_iter()
@@ -76,18 +102,27 @@ pub fn classify_engine(version_body: Option<&str>, model_info_body: Option<&str>
     if let Some(b) = version_body {
         if let Ok(v) = serde_json::from_str::<Value>(b) {
             if let Some(ver) = v["version"].as_str() {
-                return EngineInfo { kind: "vllm".into(), version: Some(ver.to_string()) };
+                return EngineInfo {
+                    kind: "vllm".into(),
+                    version: Some(ver.to_string()),
+                };
             }
         }
     }
     if let Some(b) = model_info_body {
         if let Ok(v) = serde_json::from_str::<Value>(b) {
             if let Some(p) = v["model_path"].as_str() {
-                return EngineInfo { kind: "sglang".into(), version: Some(p.to_string()) };
+                return EngineInfo {
+                    kind: "sglang".into(),
+                    version: Some(p.to_string()),
+                };
             }
         }
     }
-    EngineInfo { kind: "openai-compatible".into(), version: None }
+    EngineInfo {
+        kind: "openai-compatible".into(),
+        version: None,
+    }
 }
 
 #[cfg(test)]
@@ -105,11 +140,14 @@ mod tests {
 
     #[test]
     fn auth_matrix() {
-        assert_eq!(auth_status(true, true, Some(200)), "ok");
-        assert_eq!(auth_status(false, true, Some(200)), "not_required");
-        assert_eq!(auth_status(true, false, Some(401)), "rejected");
-        assert_eq!(auth_status(false, false, Some(401)), "required_missing");
-        assert_eq!(auth_status(true, false, None), "unreachable");
+        assert_eq!(auth_status(true, Some(200)), "ok");
+        assert_eq!(auth_status(false, Some(200)), "not_required");
+        assert_eq!(auth_status(true, Some(401)), "rejected");
+        assert_eq!(auth_status(false, Some(401)), "required_missing");
+        assert_eq!(auth_status(true, Some(403)), "rejected");
+        assert_eq!(auth_status(false, Some(403)), "required_missing");
+        assert_eq!(auth_status(true, Some(500)), "error");
+        assert_eq!(auth_status(true, None), "unreachable");
     }
 
     #[test]
@@ -125,8 +163,21 @@ mod tests {
 
     #[test]
     fn engine_classification() {
-        assert_eq!(classify_engine(Some(r#"{"version":"0.32"}"#), None).kind, "vllm");
-        assert_eq!(classify_engine(None, Some(r#"{"model_path":"x"}"#)).kind, "sglang");
+        let vllm = classify_engine(Some(r#"{"version":"0.32"}"#), None);
+        assert_eq!(vllm.kind, "vllm");
+        assert_eq!(vllm.version.as_deref(), Some("0.32"));
+
+        let sglang = classify_engine(None, Some(r#"{"model_path":"x"}"#));
+        assert_eq!(sglang.kind, "sglang");
+
+        assert_eq!(
+            classify_engine(Some("nope"), Some("nope")).kind,
+            "openai-compatible"
+        );
+
+        let both = classify_engine(Some(r#"{"version":"0.32"}"#), Some(r#"{"model_path":"x"}"#));
+        assert_eq!(both.kind, "vllm");
+
         assert_eq!(classify_engine(None, None).kind, "openai-compatible");
     }
 }

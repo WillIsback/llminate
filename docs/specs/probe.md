@@ -69,15 +69,21 @@ Rules:
 
 ## Behaviours
 
-- `auth.status`:
+- `auth.status`: `ok | not_required | rejected | required_missing | unreachable
+  (no HTTP response) | error (other non-2xx)`.
   - `ok` — `/v1/models` 2xx with a key supplied
   - `not_required` — `/v1/models` 2xx without a key
-  - `rejected` — 401 with a key supplied
-  - `required_missing` — 401 without a key
+  - `rejected` — 401/403 with a key supplied
+  - `required_missing` — 401/403 without a key
+  - `unreachable` — no HTTP response
+  - `error` — any other non-2xx
 - `engine.kind`: `vllm` (via `/version`) · `sglang` (via `/get_model_info`) ·
-  `openai-compatible` · `unknown` (existing detection logic, reused).
-- Endpoint status: `ok` | `missing` (404/405) | `denied` (401/403) | `unreachable`
-  (network). Optional probes never block.
+  `openai-compatible` · `unknown` (existing detection logic, reused). `unknown` is used
+  when the endpoint did not answer (or is not OpenAI-compatible) and no engine marker is
+  available. (The orchestrator, a later task, is responsible for emitting `unknown`; the
+  pure classifier falls back to `openai-compatible`.)
+- Endpoint status: `ok` | `missing` (404/405) | `denied` (401/403) | `error` (other
+  non-2xx) | `unreachable` (no HTTP response). Optional probes never block.
 - `latency_ms`: measured on the `/v1/models` call; `health.latency_ms` on `/health`.
 - `ok` = auth OK **and** `models` non-empty. This is the backend's fine-grained verdict.
 - Tolerant: any optional endpoint missing is recorded, not fatal.
