@@ -419,6 +419,68 @@ fn probe_json_contract() {
     assert_eq!(v["models"][0]["id"], "test-model-A");
     assert_eq!(v["endpoints"]["/v1/models"]["status"], "ok");
     assert_eq!(v["endpoints"]["/metrics"]["status"], "ok");
+    assert!(v["errors"].as_array().unwrap().is_empty(), "{}", out(&o));
+}
+
+fn sparse_app() -> Router {
+    // Primary + engine marker only: every other optional endpoint is `missing`.
+    Router::new()
+        .route("/v1/models", get(models))
+        .route("/version", get(version))
+}
+
+fn base_sparse() -> &'static str {
+    static BASE: OnceLock<String> = OnceLock::new();
+    BASE.get_or_init(|| start(sparse_app()))
+}
+
+#[test]
+fn probe_optional_missing_is_not_an_error() {
+    let o = run_at(&["probe", "--json"], base_sparse(), Some("sk-test"));
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let v: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["endpoints"]["/health"]["status"], "missing");
+    assert!(
+        v["errors"].as_array().unwrap().is_empty(),
+        "{}\n{}",
+        out(&o),
+        err(&o)
+    );
+}
+
+#[test]
+fn probe_json_save_as_duplicate_fails_before_output() {
+    let dir = std::env::temp_dir().join(format!("llminate-dup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "[targets.lab]\nurl = \"http://x:1\"\n").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_llminate"))
+        .env("LLMINATE_CONFIG", &path)
+        .env("LLMINATE_BASE_URL", base())
+        .env("LLMINATE_API_KEY", "sk-test")
+        .args(["probe", "--json", "--save-as", "lab"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "{}", err(&o));
+    assert!(
+        out(&o).trim().is_empty(),
+        "no JSON on stdout when exiting 2: {}",
+        out(&o)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn probe_set_default_without_save_as_is_usage_error() {
+    let o = run_at(
+        &["probe", "--json", "--set-default"],
+        base(),
+        Some("sk-test"),
+    );
+    assert_eq!(o.status.code(), Some(2), "{}", err(&o));
+    assert!(out(&o).trim().is_empty(), "{}", out(&o));
 }
 
 #[test]

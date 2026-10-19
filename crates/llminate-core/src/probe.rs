@@ -145,7 +145,9 @@ pub fn probe_ok(auth_status: &str, models_len: usize) -> bool {
 }
 
 /// Probe one endpoint and build its report. Never panics; optional probes are
-/// best-effort and recorded in `endpoints` / `errors`.
+/// best-effort and recorded in `endpoints`. `errors` only lists the primary
+/// `/v1/models` failure and optional endpoints that are `denied`, `unreachable`
+/// or `error` — a benign `missing` optional endpoint is not an error.
 pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport {
     let has_key = client.has_api_key();
     let url = client.base_url().to_string();
@@ -243,7 +245,9 @@ pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport {
 
     let mut errors = Vec::new();
     for (path, ep) in &endpoints {
-        if ep.status != "ok" {
+        let meaningful = path == "/v1/models"
+            || matches!(ep.status.as_str(), "denied" | "unreachable" | "error");
+        if ep.status != "ok" && meaningful {
             let detail = ep
                 .http_status
                 .map(|c| c.to_string())

@@ -149,7 +149,7 @@ collected silently and the single document is printed at the end.
 ## Implementation
 
 - **Core** (`crates/llminate-core/src/probe.rs`), reusable by Rust apps:
-  `pub struct ProbeReport` (`Serialize`) and `pub async fn probe(client: &Client) -> ProbeReport`.
+  `pub struct ProbeReport` (`Serialize`) and `pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport`.
   Reuses `Client`, `get_opt`, and the existing engine-detection logic.
 - **CLI** (`crates/llminate/src/commands/probe.rs`):
   - collects the report, then renders either the JSON document, the progressive/human

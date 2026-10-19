@@ -408,9 +408,8 @@ pub fn set_default_target(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append a `[targets.<name>]` block (url only) to the config file.
-/// Errors if the name is invalid or the target already exists. Never stores a secret.
-pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
+/// Validate a target name (ASCII letters, digits, `_`, `-`).
+pub fn validate_target_name(name: &str) -> Result<()> {
     if name.is_empty()
         || !name
             .chars()
@@ -420,6 +419,13 @@ pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
             "nom de cible invalide '{name}' (autorisé: lettres, chiffres, _ et -)"
         )));
     }
+    Ok(())
+}
+
+/// Append a `[targets.<name>]` block (url only) to the config file.
+/// Errors if the name is invalid or the target already exists. Never stores a secret.
+pub fn add_target(path: &Path, name: &str, url: &str) -> Result<()> {
+    validate_target_name(name)?;
     if url.contains('\n') || url.contains('\r') {
         return Err(Error::Config("url invalide (retour à la ligne)".into()));
     }

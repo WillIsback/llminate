@@ -68,6 +68,18 @@ pub async fn run(cli: &Cli, style: Style) -> Result<i32> {
 }
 
 async fn one_shot(cli: &Cli, a: &ProbeArgs, style: Style) -> Result<i32> {
+    // Validate --save-as up front so a doomed save never follows printed output.
+    if a.set_default && a.save_as.is_none() {
+        return Err(Error::Config("--set-default requiert --save-as".into()));
+    }
+    if let Some(name) = &a.save_as {
+        config::validate_target_name(name)?;
+        let path = config::config_path()
+            .ok_or_else(|| Error::Config("chemin de config introuvable (HOME ?)".into()))?;
+        if config::load_from(&path)?.targets.contains_key(name) {
+            return Err(Error::Config(format!("cible '{name}' existe déjà")));
+        }
+    }
     let cfg = config::load()?;
     let ov = Overrides {
         target: cli.target.clone(),
