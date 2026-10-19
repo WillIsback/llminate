@@ -18,6 +18,15 @@ async fn main() {
 async fn run() -> i32 {
     let cli = Cli::parse();
     let style = Style::new(cli.no_color);
+    if let Command::Probe { .. } = cli.command {
+        return match commands::probe::run(&cli, style).await {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("llminate: {e}");
+                e.exit_code()
+            }
+        };
+    }
     match dispatch(cli, style).await {
         Ok(()) => 0,
         Err(e) => {
@@ -94,6 +103,9 @@ async fn dispatch(cli: Cli, style: Style) -> Result<(), Error> {
             model,
         } => commands::bench(&target, n, concurrency, prompt, max_tokens, model).await,
         Command::Config => commands::config(&target, &cfg, &style),
-        Command::Completions { .. } | Command::Targets | Command::Use { .. } => unreachable!(),
+        Command::Completions { .. }
+        | Command::Targets
+        | Command::Use { .. }
+        | Command::Probe { .. } => unreachable!(),
     }
 }

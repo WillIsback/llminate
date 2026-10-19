@@ -165,4 +165,20 @@ pub enum Command {
 
     /// Génère un script de complétion shell
     Completions { shell: Shell },
+
+    /// Inspect an OpenAI-compatible endpoint (onboarding probe)
+    Probe {
+        /// Emit one JSON document (machine contract)
+        #[arg(long)]
+        json: bool,
+        /// Force the interactive wizard (requires a TTY)
+        #[arg(long, short = 'i')]
+        interactive: bool,
+        /// Persist the probed endpoint as a target on success
+        #[arg(long = "save-as", value_name = "NAME")]
+        save_as: Option<String>,
+        /// With --save-as, also set default_target
+        #[arg(long = "set-default")]
+        set_default: bool,
+    },
 }
