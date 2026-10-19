@@ -550,18 +550,7 @@ pub fn targets(s: &Style) -> Result<()> {
     let def = cfg.default_target.as_deref();
     for (name, tgt) in &cfg.targets {
         let marker = if Some(name.as_str()) == def { "*" } else { " " };
-        let key = tgt
-            .api_key_env
-            .as_deref()
-            .map(|e| {
-                if std::env::var(e).is_ok() {
-                    format!("key:{e} ok")
-                } else {
-                    format!("key:{e} absent")
-                }
-            })
-            .or_else(|| tgt.api_key.as_ref().map(|_| "key:littéral".to_string()))
-            .unwrap_or_else(|| "key:—".to_string());
+        let key = format!("key:{}", config::key_source_label(tgt));
         println!("{marker} {}  {}  {}", s.bold(name), tgt.url, key);
     }
     println!("config: {path}");

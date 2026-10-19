@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/llminate-core", "crates/llminate"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["William Derue <william.derue@gmail.com>"]
@@ -14,7 +14,7 @@ keywords = ["llm", "vllm", "sglang", "openai", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
-llminate-core = { version = "0.1.0", path = "crates/llminate-core" }
+llminate-core = { version = "0.2.0", path = "crates/llminate-core" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }

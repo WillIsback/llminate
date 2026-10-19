@@ -11,6 +11,6 @@ pub mod sse;
 pub mod stats;
 
 pub use client::Client;
-pub use config::{config_path, load, parse, resolve, ResolvedTarget, Target};
+pub use config::{config_path, load, parse, resolve, ApiKeySource, ResolvedTarget, Target};
 pub use error::{Error, Result};
 pub use stats::{BenchRow, BenchStats};

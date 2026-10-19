@@ -26,12 +26,25 @@ pub struct Target {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Name of the environment variable holding the API key (preferred).
+    /// Name of the environment variable holding the API key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
-    /// Literal API key. Discouraged: keep secrets in the environment.
+    /// Literal API key. Discouraged: keep secrets out of the config file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Shell command whose stdout is the API key (generic secret injection,
+    /// e.g. `pass`, `op`, a wrapper around `bws`...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_cmd: Option<String>,
+    /// Bitwarden Secrets Manager key name, fetched with `bws secret list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_bws: Option<String>,
+    /// BWS project id for `api_key_bws` (default: `$BWS_PROJECT_ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bws_project: Option<String>,
+    /// BWS server URL for `api_key_bws` (default: `$BWS_SERVER_URL`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bws_server: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }
@@ -71,6 +84,176 @@ impl ResolvedTarget {
     /// Human-readable target name, for messages.
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or("(sans nom)")
+    }
+}
+
+/// Where an API key comes from, in precedence order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKeySource {
+    /// A literal value (CLI flag or `api_key` field).
+    Literal(String),
+    /// Read from an environment variable of that name.
+    Env(String),
+    /// Run a shell command, take its trimmed stdout.
+    Cmd(String),
+    /// Fetch from Bitwarden Secrets Manager via `bws`.
+    Bws {
+        key: String,
+        project: Option<String>,
+        server: Option<String>,
+    },
+}
+
+/// Ordered key candidates (highest precedence first), without resolving them.
+pub fn key_sources(ov: &Overrides, target: Option<&Target>) -> Vec<ApiKeySource> {
+    let mut v = Vec::new();
+    if let Some(k) = &ov.api_key {
+        v.push(ApiKeySource::Literal(k.clone()));
+    }
+    v.push(ApiKeySource::Env("LLMINATE_API_KEY".to_string()));
+    if let Some(t) = target {
+        if let Some(name) = &t.api_key_bws {
+            v.push(ApiKeySource::Bws {
+                key: name.clone(),
+                project: t.bws_project.clone(),
+                server: t.bws_server.clone(),
+            });
+        }
+        if let Some(cmd) = &t.api_key_cmd {
+            v.push(ApiKeySource::Cmd(cmd.clone()));
+        }
+        if let Some(e) = &t.api_key_env {
+            v.push(ApiKeySource::Env(e.clone()));
+        }
+        if let Some(k) = &t.api_key {
+            v.push(ApiKeySource::Literal(k.clone()));
+        }
+    }
+    v
+}
+
+/// Walk the candidates and return the first non-empty key.
+fn resolve_key(
+    ov: &Overrides,
+    target: Option<&Target>,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>> {
+    for src in key_sources(ov, target) {
+        if let Some(k) = materialize_key(&src, env)? {
+            return Ok(Some(k));
+        }
+    }
+    Ok(None)
+}
+
+/// Resolve one source into a concrete key, or `Ok(None)` if it is merely absent.
+pub fn materialize_key(
+    source: &ApiKeySource,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>> {
+    match source {
+        ApiKeySource::Literal(s) => Ok(some_nonempty(s.clone())),
+        ApiKeySource::Env(name) => Ok(env(name).and_then(some_nonempty)),
+        ApiKeySource::Cmd(cmd) => run_sh(cmd),
+        ApiKeySource::Bws {
+            key,
+            project,
+            server,
+        } => fetch_bws(key, project, server, env).map(Some),
+    }
+}
+
+fn some_nonempty(s: String) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn run_sh(cmd: &str) -> Result<Option<String>> {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .map_err(|e| Error::Config(format!("api_key_cmd: impossible de lancer `sh` ({e})")))?;
+    if !out.status.success() {
+        let code = out
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(Error::Config(format!(
+            "api_key_cmd a échoué (code {code}): {}",
+            err.trim()
+        )));
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(some_nonempty(s))
+}
+
+fn fetch_bws(
+    key: &str,
+    project: &Option<String>,
+    server: &Option<String>,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let project = project.clone().or_else(|| env("BWS_PROJECT_ID"));
+    let server = server.clone().or_else(|| env("BWS_SERVER_URL"));
+    let mut cmd = std::process::Command::new("bws");
+    cmd.args(["secret", "list"]);
+    if let Some(p) = &project {
+        cmd.arg(p);
+    }
+    cmd.args(["--output", "json"]);
+    if let Some(s) = &server {
+        cmd.args(["--server-url", s]);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| Error::Config(format!("api_key_bws: `bws` introuvable ({e})")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(Error::Config(format!(
+            "api_key_bws: `bws secret list` a échoué: {}",
+            err.trim()
+        )));
+    }
+    parse_bws(&String::from_utf8_lossy(&out.stdout), key)
+}
+
+/// Pick `key` from a `bws secret list --output json` payload.
+pub fn parse_bws(json: &str, key: &str) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| Error::Config(format!("api_key_bws: JSON bws invalide ({e})")))?;
+    let val = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["key"].as_str() == Some(key))
+        .and_then(|s| s["value"].as_str())
+        .unwrap_or("");
+    if val.is_empty() {
+        return Err(Error::Config(format!(
+            "api_key_bws: secret '{key}' introuvable dans Bitwarden"
+        )));
+    }
+    Ok(val.to_string())
+}
+
+/// Human label for a target's configured key source (never runs it).
+pub fn key_source_label(t: &Target) -> String {
+    if let Some(k) = &t.api_key_bws {
+        format!("bws:{k}")
+    } else if t.api_key_cmd.is_some() {
+        "cmd".to_string()
+    } else if let Some(e) = &t.api_key_env {
+        format!("env:{e}")
+    } else if t.api_key.is_some() {
+        "littéral".to_string()
+    } else {
+        "—".to_string()
     }
 }
 
@@ -175,17 +358,7 @@ pub fn resolve_with(
         .or_else(|| target.and_then(|t| t.model.clone()))
         .filter(|s| !s.is_empty());
 
-    let api_key = ov
-        .api_key
-        .clone()
-        .or_else(|| env("LLMINATE_API_KEY"))
-        .or_else(|| {
-            target
-                .and_then(|t| t.api_key_env.as_ref())
-                .and_then(|k| env(k))
-        })
-        .or_else(|| target.and_then(|t| t.api_key.clone()))
-        .filter(|s| !s.is_empty());
+    let api_key = resolve_key(ov, target, env)?;
 
     let timeout = ov
         .timeout_secs
@@ -417,5 +590,95 @@ timeout_secs = 5
         let text2 = std::fs::read_to_string(&path2).unwrap();
         assert!(text2.starts_with("default_target = \"a\"\n"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_sources_precedence_order() {
+        let cfg = parse(
+            "[targets.a]\nurl = \"http://x:1\"\napi_key_bws = \"K\"\napi_key_cmd = \"echo c\"\napi_key_env = \"E\"\napi_key = \"lit\"\n",
+        )
+        .unwrap();
+        let t = &cfg.targets["a"];
+        let ov = Overrides {
+            api_key: Some("cli".into()),
+            ..Default::default()
+        };
+        let srcs = key_sources(&ov, Some(t));
+        assert_eq!(
+            srcs,
+            vec![
+                ApiKeySource::Literal("cli".into()),
+                ApiKeySource::Env("LLMINATE_API_KEY".into()),
+                ApiKeySource::Bws {
+                    key: "K".into(),
+                    project: None,
+                    server: None
+                },
+                ApiKeySource::Cmd("echo c".into()),
+                ApiKeySource::Env("E".into()),
+                ApiKeySource::Literal("lit".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn cli_key_beats_bws() {
+        let cfg = parse("[targets.a]\nurl=\"http://x:1\"\napi_key_bws=\"K\"\n").unwrap();
+        let ov = Overrides {
+            api_key: Some("cli".into()),
+            ..Default::default()
+        };
+        let t = resolve_with(&cfg, &ov, &env_of(&[])).unwrap();
+        assert_eq!(t.api_key.as_deref(), Some("cli"));
+    }
+
+    #[test]
+    fn env_beats_bws_without_running_bws() {
+        let cfg = parse("[targets.a]\nurl=\"http://x:1\"\napi_key_bws=\"K\"\n").unwrap();
+        let t = resolve_with(
+            &cfg,
+            &Overrides::default(),
+            &env_of(&[("LLMINATE_API_KEY", "sk-env")]),
+        )
+        .unwrap();
+        assert_eq!(t.api_key.as_deref(), Some("sk-env"));
+    }
+
+    #[test]
+    fn api_key_cmd_stdout_is_trimmed() {
+        let src = ApiKeySource::Cmd("echo secret-value".into());
+        let got = materialize_key(&src, &env_of(&[])).unwrap();
+        assert_eq!(got.as_deref(), Some("secret-value"));
+    }
+
+    #[test]
+    fn api_key_cmd_failure_is_a_config_error() {
+        let src = ApiKeySource::Cmd("exit 3".into());
+        let err = materialize_key(&src, &env_of(&[])).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn api_key_cmd_empty_falls_through_to_next() {
+        let cfg = parse("[targets.a]\nurl=\"http://x:1\"\napi_key_cmd=\"true\"\napi_key=\"lit\"\n")
+            .unwrap();
+        let t = resolve_with(&cfg, &Overrides::default(), &env_of(&[])).unwrap();
+        assert_eq!(t.api_key.as_deref(), Some("lit"));
+    }
+
+    #[test]
+    fn parse_bws_picks_the_key() {
+        let json = r#"[{"key":"OTHER","value":"x"},{"key":"VLLM_API_KEY","value":"sk-bws"}]"#;
+        assert_eq!(parse_bws(json, "VLLM_API_KEY").unwrap(), "sk-bws");
+        assert!(parse_bws(json, "MISSING").is_err());
+        assert!(parse_bws("not json", "K").is_err());
+    }
+
+    #[test]
+    fn key_source_label_reports_kind() {
+        let cfg = parse("[targets.a]\nurl=\"http://x:1\"\napi_key_bws=\"VLLM_API_KEY\"\n").unwrap();
+        assert_eq!(key_source_label(&cfg.targets["a"]), "bws:VLLM_API_KEY");
+        let cfg2 = parse("[targets.a]\nurl=\"http://x:1\"\n").unwrap();
+        assert_eq!(key_source_label(&cfg2.targets["a"]), "—");
     }
 }

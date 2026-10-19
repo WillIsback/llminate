@@ -38,11 +38,11 @@ default_target = "spark"
 [targets.spark]
 url = "http://192.168.1.87:30000"
 model = "qwen3.8-flash-next"
-api_key_env = "SPARK_API_KEY"
+api_key_bws = "SPARK_API_KEY"     # Bitwarden Secrets Manager key name
 
 [targets.lab]
 url = "http://100.70.22.24:30000"
-api_key_env = "LAB_API_KEY"
+api_key_env = "LAB_API_KEY"       # or read from an environment variable
 ```
 
 ```
@@ -51,8 +51,17 @@ llminate use lab          # set default_target
 llminate chat "hi" -t lab # one-off target
 ```
 
-No secret ever lives in the repo: the config references an **environment variable**
-name (`api_key_env`). A literal `api_key = "..."` is accepted as an escape hatch.
+No secret ever lives in the repo. A target picks exactly one key source:
+
+| Field | Source |
+|---|---|
+| `api_key_bws = "NAME"` | Bitwarden Secrets Manager (`bws secret list`); project/server from `BWS_PROJECT_ID`/`BWS_SERVER_URL` or `bws_project`/`bws_server` |
+| `api_key_cmd = "..."` | any shell command whose stdout is the key (`pass`, `op`, a `bws` wrapper…) |
+| `api_key_env = "NAME"` | an environment variable |
+| `api_key = "..."` | a literal (escape hatch) |
+
+Key precedence: `--api-key` > `LLMINATE_API_KEY` > `api_key_bws` > `api_key_cmd` >
+`api_key_env` > `api_key`.
 
 ## Configuration resolution
 

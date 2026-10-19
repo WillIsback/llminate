@@ -51,8 +51,10 @@ Selection rules: explicit `--target`/env → that block (error if unknown); no n
 the single configured target if exactly one, else the `default_target`; a bare
 `--url`/`LLMINATE_BASE_URL` with no name yields an anonymous target.
 
-Secrets: config references an env var name (`api_key_env`); a literal `api_key` is
-allowed as an escape hatch. Nothing secret is committed.
+Key sources, highest precedence first: `--api-key` > `LLMINATE_API_KEY` >
+`api_key_bws` (Bitwarden Secrets Manager via `bws secret list`) > `api_key_cmd`
+(any shell command whose stdout is the key) > `api_key_env` (environment variable)
+> `api_key` (literal, escape hatch). Nothing secret is committed.
 
 ## Commands
 
