@@ -1,6 +1,6 @@
 # Spec — `llminate probe` (endpoint onboarding probe)
 
-**Status:** proposed
+**Status:** implemented (v0.3.0)
 **Target version:** 0.3.0
 
 ## Goal

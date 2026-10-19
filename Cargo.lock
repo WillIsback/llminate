@@ -684,7 +684,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llminate"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "llminate-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "reqwest",
