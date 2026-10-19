@@ -1,8 +1,11 @@
 //! Endpoint probe for onboarding: inspect an OpenAI-compatible server.
 
+use crate::client::Client;
+use crate::error::Error;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProbeReport {
@@ -122,6 +125,205 @@ pub fn classify_engine(version_body: Option<&str>, model_info_body: Option<&str>
     EngineInfo {
         kind: "openai-compatible".into(),
         version: None,
+    }
+}
+
+/// Probe one endpoint and build its report. Never panics; optional probes are
+/// best-effort and recorded in `endpoints` / `errors`.
+pub async fn probe(client: &Client, target: Option<String>) -> ProbeReport {
+    let has_key = client.has_api_key();
+    let url = client.base_url().to_string();
+    let mut endpoints = BTreeMap::new();
+    let mut errors = Vec::new();
+
+    // /v1/models — primary signal
+    let t0 = Instant::now();
+    let models_res = client.get("/v1/models").await;
+    let latency_ms = t0.elapsed().as_millis() as u64;
+
+    let (auth, models, models_ep) = match &models_res {
+        Ok(body) => (
+            AuthInfo {
+                status: auth_status(has_key, Some(200)).into(),
+                http_status: Some(200),
+            },
+            parse_models(body),
+            EndpointInfo {
+                status: "ok".into(),
+                http_status: Some(200),
+            },
+        ),
+        Err(Error::Http { status, .. }) => (
+            AuthInfo {
+                status: auth_status(has_key, Some(*status)).into(),
+                http_status: Some(*status),
+            },
+            Vec::new(),
+            EndpointInfo {
+                status: endpoint_status(*status).into(),
+                http_status: Some(*status),
+            },
+        ),
+        Err(_) => (
+            AuthInfo {
+                status: auth_status(has_key, None).into(),
+                http_status: None,
+            },
+            Vec::new(),
+            EndpointInfo {
+                status: "unreachable".into(),
+                http_status: None,
+            },
+        ),
+    };
+    endpoints.insert("/v1/models".to_string(), models_ep.clone());
+
+    // engine (best-effort); mark unknown when the endpoint is not OpenAI-compatible
+    let version_body = fetch(client, "/version", &mut endpoints).await;
+    let model_info_body = fetch(client, "/get_model_info", &mut endpoints).await;
+    let mut engine = classify_engine(version_body.as_deref(), model_info_body.as_deref());
+    if models_ep.status != "ok" && engine.kind == "openai-compatible" {
+        engine.kind = "unknown".to_string();
+    }
+
+    // health (best-effort, timed)
+    let h0 = Instant::now();
+    let (health, health_ep) = match client.get("/health").await {
+        Ok(_) => (
+            HealthInfo {
+                status: "ok".into(),
+                latency_ms: Some(h0.elapsed().as_millis() as u64),
+            },
+            EndpointInfo {
+                status: "ok".into(),
+                http_status: Some(200),
+            },
+        ),
+        Err(Error::Http { status, .. }) => (
+            HealthInfo {
+                status: "missing".into(),
+                latency_ms: None,
+            },
+            EndpointInfo {
+                status: endpoint_status(status).into(),
+                http_status: Some(status),
+            },
+        ),
+        Err(_) => (
+            HealthInfo {
+                status: "unreachable".into(),
+                latency_ms: None,
+            },
+            EndpointInfo {
+                status: "unreachable".into(),
+                http_status: None,
+            },
+        ),
+    };
+    endpoints.insert("/health".to_string(), health_ep);
+
+    // metrics (best-effort, retry unauthenticated on 401/403)
+    endpoints.insert("/metrics".to_string(), fetch_metrics(client).await);
+
+    let ok = matches!(auth.status.as_str(), "ok" | "not_required") && !models.is_empty();
+
+    for (path, ep) in &endpoints {
+        if ep.status != "ok" {
+            let detail = ep
+                .http_status
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unreachable".to_string());
+            errors.push(ProbeError {
+                probe: path.clone(),
+                message: detail,
+            });
+        }
+    }
+
+    ProbeReport {
+        probe_version: 1,
+        ok,
+        target,
+        url,
+        auth,
+        engine,
+        models,
+        latency_ms,
+        health,
+        endpoints,
+        errors,
+    }
+}
+
+async fn fetch(
+    client: &Client,
+    path: &str,
+    endpoints: &mut BTreeMap<String, EndpointInfo>,
+) -> Option<String> {
+    match client.get(path).await {
+        Ok(b) => {
+            endpoints.insert(
+                path.to_string(),
+                EndpointInfo {
+                    status: "ok".into(),
+                    http_status: Some(200),
+                },
+            );
+            Some(b)
+        }
+        Err(Error::Http { status, .. }) => {
+            endpoints.insert(
+                path.to_string(),
+                EndpointInfo {
+                    status: endpoint_status(status).into(),
+                    http_status: Some(status),
+                },
+            );
+            None
+        }
+        Err(_) => {
+            endpoints.insert(
+                path.to_string(),
+                EndpointInfo {
+                    status: "unreachable".into(),
+                    http_status: None,
+                },
+            );
+            None
+        }
+    }
+}
+
+async fn fetch_metrics(client: &Client) -> EndpointInfo {
+    match client.get("/metrics").await {
+        Ok(_) => EndpointInfo {
+            status: "ok".into(),
+            http_status: Some(200),
+        },
+        Err(Error::Http {
+            status: 401 | 403, ..
+        }) => match client.get_unauthenticated("/metrics").await {
+            Ok(_) => EndpointInfo {
+                status: "ok".into(),
+                http_status: Some(200),
+            },
+            Err(Error::Http { status, .. }) => EndpointInfo {
+                status: endpoint_status(status).into(),
+                http_status: Some(status),
+            },
+            Err(_) => EndpointInfo {
+                status: "unreachable".into(),
+                http_status: None,
+            },
+        },
+        Err(Error::Http { status, .. }) => EndpointInfo {
+            status: endpoint_status(status).into(),
+            http_status: Some(status),
+        },
+        Err(_) => EndpointInfo {
+            status: "unreachable".into(),
+            http_status: None,
+        },
     }
 }
 
