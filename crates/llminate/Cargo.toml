@@ -1,0 +1,29 @@
+[package]
+name = "llminate"
+description = "to LLMinate — probe and test any OpenAI-compatible LLM server (vLLM, SGLang)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[[bin]]
+name = "llminate"
+path = "src/main.rs"
+
+[dependencies]
+llminate-core.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
